@@ -86,6 +86,34 @@ class BaselineDataTests(unittest.TestCase):
         self.assertEqual(data.sales_lines[0]["base_unit"], "cups")
         self.assertEqual(data.orders["A"]["revenue"], 120)
 
+    def test_legacy_csv_is_not_misdecoded_as_bomless_utf16(self):
+        text = ("Ma don,Ngay ban,Trang thai,Ten hang,So luong,Thanh tien\n"
+                "A,01/01/2026,completed,Café,1,10\n")
+        for encoding in ("cp1252", "utf-16"):
+            with self.subTest(encoding=encoding):
+                raw = text.encode(encoding)
+                if encoding == "cp1252" and len(raw) % 2:
+                    raw += b"\n"
+                (self.shop / "sales.csv").write_bytes(raw)
+                data = load_business(self.shop)
+                self.assertEqual(len(data.sales_lines), 1)
+                self.assertEqual(data.sales_lines[0]["product_name"], "Café")
+                self.assertEqual(data.orders["A"]["revenue"], 10)
+
+    def test_conflicting_unit_conversions_preserve_unknown_quantity(self):
+        self.csv("sales.csv", [["Mã đơn", "Ngày bán", "Trạng thái", "Tên hàng", "Số lượng", "Thành tiền", "Đơn vị tính"],
+                               ["A", "01/01/2026", "completed", "Synthetic tea", 2, 120, "box"]])
+        for second_factor, expected in ((12, None), (6, 12)):
+            with self.subTest(second_factor=second_factor):
+                (self.shop / "README.md").write_text(
+                    "## Quy ước\n- Synthetic tea: 1 box = 6 cups\n"
+                    f"- Synthetic tea: 1 box = {second_factor} cups\n", encoding="utf-8")
+                data = load_business(self.shop)
+                self.assertEqual(data.sales_lines[0]["base_qty"], expected)
+                self.assertEqual(data.orders["A"]["revenue"], 120)
+                if expected is None:
+                    self.assertTrue(any("ambiguous unit conversion" in warning for warning in data.warnings))
+
     def test_unknown_status_remains_unknown(self):
         self.csv("sales.csv", [["Mã đơn", "Ngày bán", "Trạng thái", "Tên hàng", "Số lượng", "Thành tiền"],
                                ["A", "01/01/2026", "unrecognized status", "Synthetic tea", 1, 10]])

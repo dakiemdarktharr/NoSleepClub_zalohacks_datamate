@@ -34,3 +34,7 @@ Với seed `nosleepclub-baseline-v1`, nhóm DEV gồm 513 câu thuộc 5 busines
 Không dùng các lỗi DEV cụ thể để sửa bản query sau lần đo này. Lượt đo phần TRAIN còn lại đã dừng để nhường RAM cho inference public; không có kết quả TRAIN đầy đủ cho bản cuối. Thay đổi runner sau validation chỉ giới hạn bộ nhớ theo business; có integration test kiểm tra giải phóng dữ liệu, bảo toàn thứ tự và không đọc nhãn. Tổng suite local: **80 tests pass** trên Python 3.11 với openpyxl 3.1.5.
 
 Các con số trên là validation bằng nhãn train, **không phải điểm BTC**. Public inference chạy với query/data cố định và rulebook public làm input; không dùng test questions để tạo prompt lessons hoặc chỉnh thuật toán.
+
+## Kết quả public baseline v1
+
+Ngày 02/11/2026, entry `732b3761-a0b0-4183-b5be-207337b39e34.jsonl` được portal chấm **Public Score 0,01900**. Artifact từ commit `cff2357a9102000d7d97cc9c05a14954be130b1f`, chạy 248,009 giây trên máy phát triển, 1.000 records gồm 41 đáp án/959 abstain, không có lỗi thực thi trong log. SHA256 `99a42e7f3fcca6974b9c3b0ebe79eea14916cd8b199155b4d65bfe259f8bb03b`. Điểm chính thức chỉ áp dụng cho artifact này; [audit v0.2.1](AUDIT_2026-11-02.md) có các sửa lỗi sau khi artifact đã được tạo.

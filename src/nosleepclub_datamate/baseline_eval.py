@@ -10,6 +10,7 @@ import argparse
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
+import gc
 import hashlib
 import importlib
 import json
@@ -24,6 +25,7 @@ from typing import Any, Iterable, Mapping
 from .io import identifier, json_bytes, read_jsonl
 from .metrics import summarize_verdicts
 from .splits import split_training_questions
+from .baseline_run import _input_hashes, file_sha256, validate_submission
 
 REFERENCE_TYPES = {"number", "percent", "string", "date", "boolean", "list", "table", "unanswerable"}
 PROXY_NOTICE = (
@@ -144,7 +146,7 @@ def classify_prediction(prediction: Mapping[str, Any] | None,
                         reference: Mapping[str, Any]) -> str:
     """Return a proxy correct/wrong/abstain verdict, using gold aliases only here."""
     reference_type = reference.get("type")
-    if reference_type not in REFERENCE_TYPES:
+    if not isinstance(reference_type, str) or reference_type not in REFERENCE_TYPES:
         raise ValueError("invalid reference type")
     if prediction is None:
         return "abstain"
@@ -156,6 +158,12 @@ def classify_prediction(prediction: Mapping[str, Any] | None,
     if predicted_type == "abstain":
         return "abstain"
     if predicted_type != reference_type:
+        return "wrong"
+    candidate = dict(prediction)
+    candidate["id"] = "proxy-format-check"
+    try:
+        validate_submission([candidate], ["proxy-format-check"])
+    except (ValueError, TypeError, OverflowError):
         return "wrong"
     if reference_type == "unanswerable":
         return "correct"
@@ -242,70 +250,125 @@ def freeze_training_split(train_dir: Path, output_dir: Path, seed: str) -> dict[
             manifest.get("ratios") != {"train": 0.8, "dev": 0.2, "calibration": 0.0, "lockbox": 0.0} or \
             manifest.get("source_sha256") != hashlib.sha256(question_path.read_bytes()).hexdigest():
         raise ValueError("frozen split manifest does not match source, seed, ratios, or algorithm")
-    for details in manifest["partitions"].values():
+    if set(manifest.get("partitions", {})) != {"train", "dev", "calibration", "lockbox"}:
+        raise ValueError("frozen split has invalid partitions")
+    for name, details in manifest["partitions"].items():
+        if details.get("file") != f"{name}.jsonl":
+            raise ValueError("frozen partition path is invalid")
         if hashlib.sha256((output_dir / details["file"]).read_bytes()).hexdigest() != details["sha256"]:
             raise ValueError("frozen partition checksum mismatch")
     return manifest
 
 
 def run_train_proxy(train_dir: Path, output_dir: Path, seed: str) -> dict[str, Any]:
-    """Run the current deterministic baseline on train-derived groups only."""
+    """Run dev first and release each business before loading the next.
+
+    Existing reports are immutable: use a new output directory for a new run.
+    A previously created, matching frozen split alone may be reused.
+    """
+    train_dir = train_dir.resolve(strict=True)
+    output_dir = output_dir.resolve()
+    if output_dir.is_relative_to(train_dir):
+        raise ValueError("evaluation output must be outside the input training directory")
+    artifacts = ["run.private.json"] + [f"{name}.{suffix}" for name in ("train", "dev")
+                 for suffix in ("predictions.jsonl", "verdicts.jsonl", "report.json")]
+    if any((output_dir / name).exists() for name in artifacts):
+        raise ValueError("evaluation artifacts already exist; refusing to overwrite")
     data_module = importlib.import_module("nosleepclub_datamate.baseline_data")
     query_module = importlib.import_module("nosleepclub_datamate.baseline_query")
-    policy = query_module.RulebookPolicy.from_text((train_dir / "rulebook.md").read_text(encoding="utf-8-sig"))
+    rule_raw = (train_dir / "rulebook.md").read_bytes()
+    policy = query_module.RulebookPolicy.from_text(rule_raw.decode("utf-8-sig"))
+    source_paths = sorted(Path(__file__).parent.glob("*.py"))
+    source_hashes = {path.name: file_sha256(path) for path in source_paths}
+    all_questions, question_raw = read_jsonl(train_dir / "questions.jsonl")
+    labels, label_raw = read_jsonl(train_dir / "answers.jsonl")
+    question_map = _indexed(all_questions, "question")
+    gold = _indexed(labels, "reference")
+    if question_map.keys() != gold.keys():
+        raise ValueError("training question and reference id sets differ")
+    data_root = (train_dir / "data").resolve(strict=True)
+    business_paths = {}
+    for question in all_questions:
+        business_id = identifier(question.get("business_id"), "business_id")
+        business_path = (data_root / business_id).resolve()
+        if business_path == data_root or not business_path.is_relative_to(data_root):
+            raise ValueError("business path escapes training data directory")
+        business_paths[business_id] = business_path
+    input_hashes = _input_hashes(train_dir, business_paths)
+    input_hashes["answers.jsonl"] = file_sha256(train_dir / "answers.jsonl")
+    if any(input_hashes[name] != hashlib.sha256(raw).hexdigest()
+           for name, raw in (("questions.jsonl", question_raw), ("answers.jsonl", label_raw),
+                             ("rulebook.md", rule_raw))):
+        raise ValueError("evaluation inputs changed while being read")
     split_dir = output_dir / "splits"
     split_manifest = freeze_training_split(train_dir, split_dir, seed)
-    labels, _ = read_jsonl(train_dir / "answers.jsonl")
-    gold = _indexed(labels, "reference")
-    cached_businesses = {}
     failures = []
     reports = {}
-    for split_name in ("train", "dev"):
+    for split_name in ("dev", "train"):
         started = time.monotonic()
         questions, _ = read_jsonl(split_dir / f"{split_name}.jsonl")
-        predictions = []
+        predicted_by_id = {}
+        grouped = defaultdict(list)
         for question in questions:
             business_id = identifier(question.get("business_id"), "business_id")
-            if business_id not in cached_businesses:
-                try:
-                    cached_businesses[business_id] = data_module.load_business(train_dir / "data" / business_id)
-                except Exception as exc:
-                    cached_businesses[business_id] = None
-                    failures.append({"business_id": business_id, "error_type": type(exc).__name__, "message": str(exc)})
-            business = cached_businesses[business_id]
-            if business is None:
-                prediction = {"id": question["id"], "type": "abstain", "reason": "business_load_failed"}
-            else:
-                try:
-                    prediction = query_module.answer_question(question, business, policy)
-                except Exception as exc:
-                    failures.append({"id": question["id"], "error_type": type(exc).__name__, "message": str(exc)})
-                    prediction = {"id": question["id"], "type": "abstain", "reason": "solver_exception"}
-            if not isinstance(prediction, dict) or prediction.get("id") != question["id"]:
-                raise ValueError("solver returned an invalid or mismatched prediction id")
-            predictions.append(prediction)
+            grouped[business_id].append(question)
+        for business_id, group in grouped.items():
+            business_path = (data_root / business_id).resolve()
+            if business_path == data_root or not business_path.is_relative_to(data_root):
+                raise ValueError("business path escapes training data directory")
+            business = None
+            try:
+                business = data_module.load_business(business_path)
+            except Exception as exc:
+                failures.append({"business_id": business_id, "error_type": type(exc).__name__, "message": str(exc)})
+            for question in group:
+                if business is None:
+                    prediction = {"id": question["id"], "type": "abstain", "reason": "business_load_failed"}
+                else:
+                    try:
+                        prediction = query_module.answer_question(question, business, policy)
+                        validate_submission([prediction], [question["id"]])
+                    except Exception as exc:
+                        failures.append({"id": question["id"], "error_type": type(exc).__name__, "message": str(exc)})
+                        prediction = {"id": question["id"], "type": "abstain", "reason": "solver_exception"}
+                predicted_by_id[question["id"]] = prediction
+            del business
+            gc.collect()
+        predictions = [predicted_by_id[question["id"]] for question in questions]
         if questions:
             selected_gold = [gold[question["id"]] for question in questions]
             report, verdicts = evaluate_records(selected_gold, predictions, questions)
         else:
             report, verdicts = {"notice": PROXY_NOTICE, "expected_total": 0}, []
         report["elapsed_seconds"] = round(time.monotonic() - started, 6)
+        report["source_sha256"] = source_hashes
         reports[split_name] = report
         for filename, records in ((f"{split_name}.predictions.jsonl", predictions),
                                   (f"{split_name}.verdicts.jsonl", verdicts)):
-            (output_dir / filename).write_bytes(b"".join(json_bytes(record) + b"\n" for record in records))
-        (output_dir / f"{split_name}.report.json").write_bytes(json_bytes(report) + b"\n")
+            with (output_dir / filename).open("xb") as stream:
+                stream.write(b"".join(json_bytes(record) + b"\n" for record in records))
+        with (output_dir / f"{split_name}.report.json").open("xb") as stream:
+            stream.write(json_bytes(report) + b"\n")
+    if source_hashes != {path.name: file_sha256(path) for path in sorted(Path(__file__).parent.glob("*.py"))}:
+        raise ValueError("implementation changed during evaluation; run was not finalized")
+    final_inputs = _input_hashes(train_dir, business_paths)
+    final_inputs["answers.jsonl"] = file_sha256(train_dir / "answers.jsonl")
+    if input_hashes != final_inputs:
+        raise ValueError("evaluation inputs changed during run; run was not finalized")
     run = {
         "notice": PROXY_NOTICE,
         "split_manifest_sha256": hashlib.sha256((split_dir / "manifest.json").read_bytes()).hexdigest(),
         "source_questions_sha256": split_manifest["source_sha256"],
         "source_labels_sha256": hashlib.sha256((train_dir / "answers.jsonl").read_bytes()).hexdigest(),
+        "source_sha256": source_hashes,
+        "input_sha256": input_hashes,
         "solver_module_sha256": hashlib.sha256(Path(query_module.__file__).read_bytes()).hexdigest(),
         "data_module_sha256": hashlib.sha256(Path(data_module.__file__).read_bytes()).hexdigest(),
         "reports": reports,
         "failures": failures,
     }
-    (output_dir / "run.private.json").write_bytes(json_bytes(run) + b"\n")
+    with (output_dir / "run.private.json").open("xb") as stream:
+        stream.write(json_bytes(run) + b"\n")
     return run
 
 

@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+import weakref
 
-from nosleepclub_datamate.baseline_eval import classify_prediction, evaluate_records, freeze_training_split
+from nosleepclub_datamate.baseline_eval import classify_prediction, evaluate_records, freeze_training_split, run_train_proxy
 
 
 def reference(kind, answer=None, aliases=None):
@@ -71,6 +73,11 @@ class ProxyMatchingTests(unittest.TestCase):
         self.assertEqual(classify_prediction({"type": "number", "answer": 0}, gold), "wrong")
         self.assertEqual(classify_prediction({"type": "unanswerable", "reason": 1}, gold), "abstain")
         self.assertEqual(classify_prediction({"type": "unanswerable"}, reference("number", 0)), "wrong")
+        self.assertEqual(classify_prediction({"type": "unanswerable", "answer": 0}, gold), "wrong")
+
+    def test_proxy_rejects_nested_or_boolean_list_cells(self):
+        self.assertVerdict("list", [1], [True], "wrong")
+        self.assertVerdict("list", ["synthetic"], [{"nested": "synthetic"}], "wrong")
 
     def test_type_mismatch_is_wrong_and_missing_predictions_use_full_denominator(self):
         labels = [reference("number", 7), {**reference("string", "A"), "id": "synthetic-missing"}]
@@ -90,6 +97,89 @@ class ProxyMatchingTests(unittest.TestCase):
 
 
 class FrozenTrainingSplitTests(unittest.TestCase):
+    def test_proxy_binds_business_files_and_calendar_and_rejects_mutations(self):
+        for changed_file in ("business", "calendar"):
+            with self.subTest(changed_file=changed_file), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                train = root / "train"
+                business = train / "data" / "synthetic"
+                business.mkdir(parents=True)
+                readme = business / "README.md"
+                readme.write_text("Synthetic initial business", encoding="utf-8")
+                calendar = train / "calendar.csv"
+                calendar.write_text("synthetic\n1\n", encoding="utf-8")
+                question = {"id": "synthetic-q", "business_id": "synthetic"}
+                (train / "questions.jsonl").write_text(json.dumps(question) + "\n", encoding="utf-8")
+                (train / "answers.jsonl").write_text(json.dumps(
+                    {"id": "synthetic-q", "type": "number", "answer": 7, "alias": []}) + "\n", encoding="utf-8")
+                (train / "rulebook.md").write_text("Synthetic policy", encoding="utf-8")
+
+                def solve(question, loaded, policy):
+                    target = readme if changed_file == "business" else calendar
+                    target.write_text("Synthetic mutation", encoding="utf-8")
+                    return {"id": question["id"], "type": "number", "answer": 7}
+
+                output = root / "private-evaluation"
+                with patch("nosleepclub_datamate.baseline_data.load_business", return_value=object()), \
+                     patch("nosleepclub_datamate.baseline_query.answer_question", new=solve), \
+                     self.assertRaisesRegex(ValueError, "inputs changed"):
+                    run_train_proxy(train, output, "frozen")
+                self.assertFalse((output / "run.private.json").exists())
+
+    def test_proxy_releases_each_business_and_preserves_existing_reports(self):
+        class Business:
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            train = root / "train"
+            train.mkdir()
+            questions = [{"id": f"synthetic-q-{index}", "business_id": f"synthetic-b-{index % 8}",
+                          "question": "Synthetic count?", "as_of_date": "2026-01-01"}
+                         for index in range(24)]
+            labels = [{"id": question["id"], "type": "number", "answer": 7, "alias": []}
+                      for question in questions]
+            for name, records in (("questions.jsonl", questions), ("answers.jsonl", labels)):
+                (train / name).write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+            (train / "rulebook.md").write_text("Synthetic policy", encoding="utf-8")
+            (train / "data").mkdir()
+            references = []
+
+            def load(path):
+                self.assertTrue(all(reference() is None for reference in references))
+                business = Business()
+                references.append(weakref.ref(business))
+                return business
+
+            def solve(question, business, policy):
+                return {"id": question["id"], "type": "number", "answer": 7}
+
+            output = root / "private-evaluation"
+            with patch("nosleepclub_datamate.baseline_data.load_business", new=load), \
+                 patch("nosleepclub_datamate.baseline_query.answer_question", new=solve):
+                report = run_train_proxy(train, output, "synthetic-seed")
+            self.assertTrue(all(reference() is None for reference in references))
+            self.assertEqual(sum(part["expected_total"] for part in report["reports"].values()), 24)
+            self.assertEqual(len(references), 8)
+            original = (output / "dev.report.json").read_bytes()
+            with self.assertRaisesRegex(ValueError, "overwrite"):
+                run_train_proxy(train, output, "synthetic-seed")
+            self.assertEqual(original, (output / "dev.report.json").read_bytes())
+
+    def test_frozen_manifest_cannot_redirect_a_partition_outside_its_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            train = root / "train"
+            train.mkdir()
+            (train / "questions.jsonl").write_text('{"id":"synthetic","business_id":"synthetic"}\n', encoding="utf-8")
+            freeze_training_split(train, root / "splits", "frozen")
+            manifest_path = root / "splits" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["partitions"]["train"]["file"] = "../outside.jsonl"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "path"):
+                freeze_training_split(train, root / "splits", "frozen")
+
     def test_frozen_split_is_reused_verified_and_source_mutations_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

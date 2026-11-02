@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nosleepclub-datamate"
-version = "0.2.0"
+version = "0.2.1"
 description = "Conservative deterministic DataMate baseline and local research utilities; not an official scorer."
 requires-python = ">=3.11"
 dependencies = ["openpyxl==3.1.5"]

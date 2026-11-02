@@ -28,12 +28,40 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _finite_number(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and (
+        isinstance(value, int) or math.isfinite(value)
+    )
+
+
+def _scalar(value: Any) -> bool:
+    return isinstance(value, str) or _finite_number(value)
+
+
+def _input_hashes(split: Path, business_paths: dict[str, Path]) -> dict[str, str]:
+    """Rebuild the input inventory too, detecting added/removed files at the end."""
+    data_root = (split / "data").resolve(strict=True)
+    inputs = {name: file_sha256(split / name) for name in ("questions.jsonl", "rulebook.md")}
+    if (split / "calendar.csv").is_file():
+        inputs["calendar.csv"] = file_sha256(split / "calendar.csv")
+    for business_path in business_paths.values():
+        for path in sorted(business_path.rglob("*")):
+            if path.is_file():
+                if not path.resolve().is_relative_to(data_root):
+                    raise ValueError("business file escapes split data directory")
+                inputs[path.relative_to(split).as_posix()] = file_sha256(path)
+    return inputs
+
+
 def validate_submission(records: list[dict[str, Any]], expected_ids: list[str]) -> None:
     """Validate all public types and exact question membership, not correctness."""
+    expected_ids = [identifier(value, "expected id") for value in expected_ids]
     if len(expected_ids) != len(set(expected_ids)):
         raise ValueError("duplicate question identifiers")
     seen: set[str] = set()
     for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("submission records must be objects")
         record_id = identifier(record.get("id"), "submission id")
         if record_id in seen:
             raise ValueError("duplicate submission identifier")
@@ -46,7 +74,7 @@ def validate_submission(records: list[dict[str, Any]], expected_ids: list[str]) 
             if "answer" in record:
                 raise ValueError("special types must omit answer")
         elif kind in ("number", "percent"):
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            if not _finite_number(value):
                 raise ValueError("numeric answer must be a finite JSON number")
         elif kind == "boolean":
             if not isinstance(value, bool):
@@ -71,16 +99,18 @@ def validate_submission(records: list[dict[str, Any]], expected_ids: list[str]) 
             if parsed.isoformat() != value and parsed.strftime("%Y-%m") != value:
                 raise ValueError("date answer must use YYYY-MM-DD or YYYY-MM")
         elif kind == "list":
-            if not isinstance(value, list):
-                raise ValueError("list answer must be a JSON array")
+            if not isinstance(value, list) or not all(_scalar(cell) for cell in value):
+                raise ValueError("list answer must contain only strings or finite JSON numbers")
         elif kind == "table":
             if not isinstance(value, dict) or set(value) != {"columns", "rows"}:
                 raise ValueError("table answer must have columns and rows")
             columns, rows = value["columns"], value["rows"]
-            if not isinstance(columns, list) or not all(isinstance(c, str) for c in columns):
-                raise ValueError("table columns must be strings")
+            if not isinstance(columns, list) or not columns or not all(isinstance(c, str) and c.strip() for c in columns):
+                raise ValueError("table columns must be nonempty strings")
             if not isinstance(rows, list) or not all(isinstance(row, list) and len(row) == len(columns) for row in rows):
                 raise ValueError("table rows must match column width")
+            if not all(_scalar(cell) for row in rows for cell in row):
+                raise ValueError("table cells must be strings or finite JSON numbers")
         else:
             raise ValueError("unsupported submission type")
         # Also checks nested values for JSON compatibility and nonfinite numbers.
@@ -115,21 +145,16 @@ def run_baseline(split: Path, output_dir: Path) -> dict[str, Any]:
             raise ValueError("business path escapes split data directory")
         business_paths[business_id] = business_path
     rule_path = split / "rulebook.md"
-    policy = RulebookPolicy.from_text(rule_path.read_text(encoding="utf-8-sig"))
+    rule_raw = rule_path.read_bytes()
+    policy = RulebookPolicy.from_text(rule_raw.decode("utf-8-sig"))
     source_hashes = {
         path.name: file_sha256(path)
         for path in sorted(Path(__file__).parent.glob("*.py"))
     }
-    inputs = {"questions.jsonl": hashlib.sha256(question_raw).hexdigest(), "rulebook.md": file_sha256(rule_path)}
-    if (split / "calendar.csv").is_file():
-        inputs["calendar.csv"] = file_sha256(split / "calendar.csv")
-    for business_path in business_paths.values():
-        for path in sorted(business_path.rglob("*")):
-            if path.is_file():
-                resolved = path.resolve()
-                if not resolved.is_relative_to(data_root):
-                    raise ValueError("business file escapes split data directory")
-                inputs[path.relative_to(split).as_posix()] = file_sha256(path)
+    inputs = _input_hashes(split, business_paths)
+    if inputs["questions.jsonl"] != hashlib.sha256(question_raw).hexdigest() or \
+            inputs["rulebook.md"] != hashlib.sha256(rule_raw).hexdigest():
+        raise ValueError("questions or policy changed while being read")
     output_dir.mkdir(parents=True, exist_ok=False)
     answers: dict[str, dict[str, Any]] = {}
     traces = []
@@ -173,6 +198,8 @@ def run_baseline(split: Path, output_dir: Path) -> dict[str, Any]:
         for path in sorted(Path(__file__).parent.glob("*.py"))
     }:
         raise ValueError("implementation changed during run; output was not finalized")
+    if inputs != _input_hashes(split, business_paths):
+        raise ValueError("inputs changed during run; output was not finalized")
     output_path = output_dir / "submission.jsonl"
     output_path.write_bytes(b"".join(json_bytes(record) + b"\n" for record in records))
     log_dir = output_dir / "logs"

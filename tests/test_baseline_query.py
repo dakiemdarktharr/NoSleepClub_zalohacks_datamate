@@ -1,10 +1,11 @@
 """Wholly synthetic regression cases for the conservative query interpreter."""
 from datetime import date, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 import unittest
 
 from nosleepclub_datamate.baseline_query import (
-    RulebookPolicy, answer_question, parse_period,
+    RulebookPolicy, answer_question, parse_period, _threshold,
 )
 
 
@@ -76,6 +77,18 @@ class PeriodTests(unittest.TestCase):
         self.assertIsNone(parse_period("Doanh thu ngay 31/02/2026", "2026-07-08"))
         self.assertIsNone(parse_period("Doanh thu hom nay", None))
 
+    def test_conflicting_relative_days_are_not_silently_selected(self):
+        self.assertIsNone(parse_period("Doanh thu hom nay hom qua", "2026-07-08"))
+
+    def test_mixed_month_and_quarter_are_not_silently_selected(self):
+        self.assertIsNone(parse_period("Doanh thu quy 2/2026 thang 7/2026", "2026-07-08"))
+
+    def test_mixed_date_formats_preserve_textual_range_order(self):
+        p = parse_period("Doanh thu tu 01/07/2026 den 2026-07-05", "2026-07-08")
+        self.assertEqual((p.start, p.end), (date(2026, 7, 1), date(2026, 7, 5)))
+        self.assertIsNone(parse_period("Doanh thu tu 05/07/2026 den 2026-07-01",
+                                       "2026-07-08"))
+
 
 class QueryTests(unittest.TestCase):
     def setUp(self):
@@ -111,6 +124,17 @@ class QueryTests(unittest.TestCase):
     def test_unknown_named_product_does_not_become_shop_total(self):
         self.assertEqual(
             self.solve("Thang nay ban Nuoc le duoc bao nhieu tien?")["type"], "abstain")
+
+    def test_multiple_products_do_not_select_only_the_longest_name(self):
+        self.business.products["A02"]["name"] = "Tra xanh dac biet"
+        self.assertEqual(self.solve(
+            "Doanh thu cua Nuoc tao, Tra xanh dac biet thang nay la bao nhieu?")["type"],
+            "abstain")
+
+    def test_contained_alias_does_not_make_a_single_name_ambiguous(self):
+        self.business.products["A03"] = {"name": "Nuoc"}
+        self.assertEqual(self.solve("Doanh thu cua Nuoc tao thang nay la bao nhieu?")["answer"],
+                         200)
 
     def test_unknown_weekday_or_hour_filter_abstains(self):
         for text in ("Doanh thu thu hai thang nay la bao nhieu?",
@@ -154,6 +178,8 @@ class QueryTests(unittest.TestCase):
     def test_missing_policy_abstains(self):
         self.assertEqual(self.solve("Doanh thu thang nay la bao nhieu?",
                                     RulebookPolicy())["type"], "abstain")
+        self.assertEqual(self.solve("Doanh thu thang 6/2026 la bao nhieu?",
+                                    RulebookPolicy())["type"], "abstain")
 
     def test_declared_outside_period_is_unanswerable(self):
         self.assertEqual(self.solve("Doanh thu thang 6/2026 la bao nhieu?")["type"],
@@ -184,6 +210,46 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(self.solve(
             "Thang nay co bao nhieu don co doanh thu tu 350 dong tro len?")["type"],
             "abstain")
+
+    def test_per_day_and_average_counts_are_not_period_totals(self):
+        for text in ("Thang nay trung binh moi ngay co bao nhieu don?",
+                     "Thang nay moi ngay co bao nhieu don?",
+                     "Ti le don huy moi ngay thang nay la bao nhieu %?",
+                     "Moi ngay thang nay top 2 mat hang ban chay nhat la gi?"):
+            with self.subTest(text=text):
+                self.assertEqual(self.solve(text)["type"], "abstain")
+
+    def test_unsupported_non_temporal_fact_does_not_become_unanswerable(self):
+        self.assertEqual(self.solve("Ten cua hang trong thang 6/2026 la gi?")["type"],
+                         "abstain")
+
+    def test_scaled_thresholds_preserve_decimal_values(self):
+        for literal in ("1.5 nghin", "1,5 nghin"):
+            with self.subTest(literal=literal):
+                self.assertEqual(_threshold("doanh thu tu " + literal + " tro len"),
+                                 (">=", Decimal(1500)))
+        self.assertEqual(_threshold("doanh thu tu 0.5 trieu tro len"),
+                         (">=", Decimal(500000)))
+        self.assertEqual(_threshold("doanh thu tu 1.500.000 dong tro len"),
+                         (">=", Decimal(1500000)))
+
+    def test_malformed_threshold_is_not_coerced_to_an_integer(self):
+        self.assertEqual(self.solve(
+            "Thang nay co bao nhieu don co doanh thu tu 1.2.3 dong tro len?")["type"],
+            "abstain")
+
+    def test_nonfinite_order_revenue_abstains_without_exception(self):
+        self.business.orders["O1"]["revenue"] = float("nan")
+        self.assertEqual(self.solve(
+            "Thang nay co bao nhieu don co doanh thu tu 350 dong tro len?")["type"],
+            "abstain")
+
+    def test_punctuated_service_fee_is_not_a_product_rank(self):
+        fee = dict(self.business.sales_lines[0], product_id="FEE",
+                   product_name="Phi phuc vu.", base_qty=999)
+        self.business.sales_lines.append(fee)
+        self.assertEqual(self.solve("Mat hang nao ban chay nhat thang nay?")["answer"],
+                         "Tra xanh")
 
 
 if __name__ == "__main__":

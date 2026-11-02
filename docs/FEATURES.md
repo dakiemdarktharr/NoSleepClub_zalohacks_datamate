@@ -2,6 +2,8 @@
 
 Cập nhật 02/11/2026. **Done** chỉ nghĩa chức năng đã triển khai/kiểm thử như mô tả, không suy ra hệ thống thi đã hoạt động.
 
+Bản v0.2.1 đã sửa lỗi ingestion, scope/ngày/số tiền, JSONL và evaluator theo [báo cáo audit](AUDIT_2026-11-02.md). File baseline đầu vẫn gắn với source v0.2.0; chưa dùng điểm của file cũ để đánh giá các sửa lỗi mới.
+
 | Ưu tiên | Feature | Trạng thái | Definition of done |
 | --- | --- | --- | --- |
 | P0 | PA verdict summary | Done | C/W/A, missing→abstain, denominator cố định, gap/coverage, reject duplicates/invalid records |

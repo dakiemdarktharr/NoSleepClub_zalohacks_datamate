@@ -99,17 +99,27 @@ def parse_period(text: str, as_of_date: Any) -> Period | None:
     if today is None:
         return None
     s = normalize(text)
+    if "hom nay" in s and "hom qua" in s:
+        return None
+    temporal_families = sum(bool(re.search(pattern, s)) for pattern in (
+        r"\btuan\s+(?:nay|truoc|roi)\b", r"\bthang\s+(?:\d+|nay|truoc)\b",
+        r"\bquy\s+[1-4]\b", r"\b\d+\s+ngay\s+gan nhat\b", r"\btu dau nam\b",
+    ))
+    if temporal_families > 1 or (temporal_families and "hom qua" in s):
+        return None
     # These request comparisons, lunar semantics, or multiple time buckets.
     if re.search(r"tet|am lich|cung ky|nam ngoai|lien nhau|lien tiep|ket thuc|"
                  r"so voi|tang.truong|tang/giam|chenh lech|lien truoc|"
                  r"thay doi|moi thang|tung thang|tu thang.+(?:den|toi) thang", s):
         return None
     try:
-        iso_dates = [date.fromisoformat(m.group()) for m in
-                     re.finditer(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)", s)]
-        slash_dates = [date(int(m[3]), int(m[2]), int(m[1])) for m in
-                       re.finditer(r"(?<!\d)(\d{1,2})/(\d{1,2})/(\d{4})(?!\d)", s)]
-        explicit_dates = iso_dates + slash_dates
+        explicit_dates = []
+        for match in re.finditer(
+                r"(?<!\d)(?:(?P<iso>\d{4}-\d{2}-\d{2})|"
+                r"(?P<day>\d{1,2})/(?P<month>\d{1,2})/(?P<year>\d{4}))(?!\d)", s):
+            explicit_dates.append(
+                date.fromisoformat(match["iso"]) if match["iso"] else
+                date(int(match["year"]), int(match["month"]), int(match["day"])))
         if explicit_dates:
             unique = list(dict.fromkeys(explicit_dates))
             if len(unique) == 1:
@@ -222,19 +232,21 @@ def _product_label(product_id: str, rows: list[Mapping[str, Any]],
 
 
 def _products_in_question(s: str, products: Mapping[str, Mapping[str, Any]]) -> set[str]:
-    matches: list[tuple[int, str]] = []
+    matches: list[tuple[int, int, str]] = []
     for product_id, product in products.items():
         aliases = [product.get("name"), product.get("product_name")]
         aliases.extend(product.get("aliases") or [])
         for name in aliases:
             needle = normalize(name)
-            if needle and len(needle) >= 3 and re.search(
-                    r"(?<!\w)" + re.escape(needle) + r"(?!\w)", s):
-                matches.append((len(needle), str(product_id)))
-    if not matches:
-        return set()
-    longest = max(length for length, _ in matches)
-    return {key for length, key in matches if length == longest}
+            if needle and len(needle) >= 3:
+                for match in re.finditer(r"(?<!\w)" + re.escape(needle) + r"(?!\w)", s):
+                    matches.append((match.start(), match.end(), str(product_id)))
+    # A short alias inside a longer matched name is not a second entity. Two
+    # separate name mentions remain distinct even if their lengths differ.
+    return {key for start, end, key in matches if not any(
+        other_start <= start and end <= other_end
+        and (other_start < start or end < other_end)
+        for other_start, other_end, _ in matches)}
 
 
 def _payment_target(s: str) -> str | None:
@@ -324,20 +336,51 @@ def _filter_rows(s: str, rows: list[Mapping[str, Any]], business: Any
     return result
 
 
+def _amount_literal(token: str, unit: str | None) -> Decimal | None:
+    """Parse explicit decimal scales without deleting decimal separators."""
+    if not re.fullmatch(r"\d+(?:[.,]\d+)*", token):
+        return None
+    scaled = unit in {"trieu", "nghin", "ngan", "k"}
+    if "." in token and "," in token:
+        decimal_mark = "." if token.rfind(".") > token.rfind(",") else ","
+        group_mark = "," if decimal_mark == "." else "."
+        integer, fraction = token.rsplit(decimal_mark, 1)
+        if decimal_mark in integer or group_mark in fraction:
+            return None
+        groups = integer.split(group_mark)
+        if (not 1 <= len(groups[0]) <= 3
+                or any(len(group) != 3 for group in groups[1:])):
+            return None
+        token = "".join(groups) + "." + fraction
+    elif "." in token or "," in token:
+        mark = "." if "." in token else ","
+        parts = token.split(mark)
+        if len(parts) > 2:
+            if not 1 <= len(parts[0]) <= 3 or any(len(p) != 3 for p in parts[1:]):
+                return None
+            token = "".join(parts)
+        elif len(parts[1]) == 3 and parts[0] != "0":
+            if scaled:  # e.g. 1.500 million admits two incompatible readings.
+                return None
+            token = "".join(parts)
+        else:
+            token = token.replace(mark, ".")
+    amount = _decimal(token)
+    if amount is None:
+        return None
+    scale = 1_000_000 if unit == "trieu" else 1000 if scaled else 1
+    return amount * scale
+
+
 def _threshold(s: str) -> tuple[str, Decimal] | None:
     m = re.search(r"(?:doanh thu|gia tri)\s*(?:la\s*)?"
                   r"(tu|>=|≥|tren|hon|duoi|>|<)\s*"
                   r"(\d[\d.,]*)(?:\s*(trieu|nghin|ngan|k|dong))?", s)
     if not m:
         return None
-    token = m[2]
-    if m[3] == "trieu":
-        amount = Decimal(token.replace(".", "").replace(",", "."))
-        amount *= 1_000_000
-    else:
-        amount = Decimal(re.sub(r"[.,]", "", token))
-        if m[3] in {"nghin", "ngan", "k"}:
-            amount *= 1000
+    amount = _amount_literal(m[2], m[3])
+    if amount is None:
+        return None
     comparison = ">=" if m[1] in {"tu", ">=", "≥"} else m[1]
     comparison = ">" if comparison in {"tren", "hon"} else comparison
     comparison = "<" if comparison == "duoi" else comparison
@@ -353,6 +396,9 @@ def answer_question(q: Mapping[str, Any], business: Any,
         text = getattr(business, "rulebook", "")
         policy = RulebookPolicy.from_text(text)
     s = normalize(q.get("question"))
+    if re.search(r"\b(?:moi|tung|theo|tren(?:\s+mot)?)\s+"
+                 r"(?:ngay|tuan|thang)\b|\btheo\s+ca\b", s):
+        return _abstain(q)
     period = parse_period(s, q.get("as_of_date"))
     if period is None:
         return _abstain(q)
@@ -377,6 +423,19 @@ def answer_question(q: Mapping[str, Any], business: Any,
                                     r"dem.+don|tong cong.+don", s))
     is_cancel = bool(re.search(r"\bhuy\b", s))
     is_cancel_rate = is_cancel and bool(re.search(r"ti le|ty le|phan tram|%", s))
+    is_ranking = bool(re.search(r"ban chay|ban nhieu nhat|"
+                                r"ban duoc nhieu nhat|hot nhat|chay nhat", s))
+    is_revenue = bool(re.search(r"\b(?:doanh thu|tien ban)\b|"
+                                r"\bban\b.+\btien\b|\bthu ve\b.+\btien\b", s))
+    if not (is_order_count or is_cancel_rate or is_ranking or is_revenue):
+        return _abstain(q)
+    required_policy = (policy.valid_order_count if is_order_count or is_cancel_rate
+                       else policy.quantity_ranking if is_ranking else policy.revenue)
+    if not required_policy:
+        return _abstain(q)
+    if is_order_count and (re.search(r"trung binh|binh quan", s)
+                           or (not is_cancel_rate and re.search(r"ti le|ty le|phan tram|%", s))):
+        return _abstain(q)
     lines = list(getattr(business, "sales_lines", []))
     if not lines:
         if (not (is_order_count or is_cancel_rate) or _threshold(s) is not None):
@@ -443,7 +502,7 @@ def answer_question(q: Mapping[str, Any], business: Any,
         if re.search(r"doanh thu|gia tri", s) and threshold is None:
             return _abstain(q)
         if threshold is not None:
-            if not policy.revenue or any(r.get("revenue") is None for r in filtered):
+            if not policy.revenue or any(_decimal(r.get("revenue")) is None for r in filtered):
                 return _abstain(q)
             operator, amount = threshold
             functions = {">=": lambda n: n >= amount, ">": lambda n: n > amount,
@@ -452,8 +511,6 @@ def answer_question(q: Mapping[str, Any], business: Any,
                         if functions[operator](_decimal(r["revenue"]))]
         return _answer(q, "number", len(filtered))
 
-    is_ranking = bool(re.search(r"ban chay|ban nhieu nhat|"
-                                r"ban duoc nhieu nhat|hot nhat|chay nhat", s))
     if is_ranking:
         if not policy.quantity_ranking:
             return _abstain(q)
@@ -471,11 +528,11 @@ def answer_question(q: Mapping[str, Any], business: Any,
             return _abstain(q)
         grouped: dict[str, Decimal] = defaultdict(Decimal)
         for row in filtered:
-            if normalize(row.get("product_name")) == "phi phuc vu":
+            if re.sub(r"[^a-z0-9]+", " ", normalize(row.get("product_name"))).strip() == "phi phuc vu":
                 continue
             key = row.get("product_id")
             quantity = _decimal(row.get("base_qty"))
-            if key is None or quantity is None:
+            if key is None or not str(key).strip() or quantity is None:
                 return _abstain(q)
             grouped[str(key)] += quantity
         if not grouped:
@@ -490,7 +547,6 @@ def answer_question(q: Mapping[str, Any], business: Any,
         labels = [_product_label(key, filtered, products) for key in ranked[:count]]
         return _answer(q, "list" if m else "string", labels if m else labels[0])
 
-    is_revenue = bool(re.search(r"doanh thu|tien ban|ban.+tien|thu ve.+tien", s))
     if not is_revenue or not policy.revenue:
         return _abstain(q)
     if not _known_scope(s, business, "revenue"):

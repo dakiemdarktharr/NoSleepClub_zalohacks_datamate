@@ -62,6 +62,10 @@ Baseline không có model suy luận hay API bên ngoài. Nó đọc schema/READ
 
 ## Trạng thái
 
+Đợt [audit v0.2.1](docs/AUDIT_2026-11-02.md) bổ sung kiểm thử và sửa các lỗi đọc dữ liệu, diễn giải câu hỏi, format và quản lý bộ nhớ. Artifact nộp đầu được giữ cố định ở v0.2.0 để đối chiếu điểm BTC.
+
+**Điểm BTC của baseline v1: Public Score 0,01900**, entry `732b3761-a0b0-4183-b5be-207337b39e34.jsonl`, hiển thị trên portal lúc 02/11/2026 15:40:26. File có 41 đáp án và 959 abstain. Điểm này thuộc source v0.2.0; bản đã sửa v0.2.1 chưa được chấm chính thức.
+
 | Hạng mục | Hiện tại |
 | --- | --- |
 | Research, roadmap, architecture | Đã có tài liệu và nguồn đọc |

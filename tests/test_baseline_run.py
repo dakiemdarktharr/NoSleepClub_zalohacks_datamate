@@ -37,6 +37,21 @@ class SubmissionValidationTests(unittest.TestCase):
         for value in (True, float("nan"), float("inf"), "42"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_submission([{"id": "a", "type": "number", "answer": value}], ["a"])
+        validate_submission([{"id": "a", "type": "number", "answer": 10 ** 400}], ["a"])
+
+    def test_list_and_table_cells_reject_nested_values_and_booleans(self):
+        for cell in (True, None, {}, [], float("inf")):
+            with self.subTest(cell=cell), self.assertRaises(ValueError):
+                validate_submission([{"id": "a", "type": "list", "answer": [cell]}], ["a"])
+            with self.subTest(table_cell=cell), self.assertRaises(ValueError):
+                validate_submission([{"id": "a", "type": "table", "answer": {
+                    "columns": ["entity", "amount"], "rows": [["Synthetic", cell]]}}], ["a"])
+
+    def test_nonobject_records_and_empty_expected_ids_fail_cleanly(self):
+        with self.assertRaises(ValueError):
+            validate_submission([None], ["a"])
+        with self.assertRaises(ValueError):
+            validate_submission([], [" "])
 
     def test_date_requires_actual_iso_calendar_day(self):
         for value in ("2026-02-30", "20260102", "02/01/2026"):
@@ -55,6 +70,35 @@ class SubmissionValidationTests(unittest.TestCase):
 
 
 class PrivateRunnerTests(unittest.TestCase):
+    def test_changed_or_added_inputs_do_not_receive_a_final_manifest(self):
+        for change in ("rewrite", "add"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                split = root / "split"
+                business = split / "data" / "synthetic"
+                business.mkdir(parents=True)
+                readme = business / "README.md"
+                readme.write_text("Synthetic initial input", encoding="utf-8")
+                question = {"id": "synthetic-q", "business_id": "synthetic",
+                            "question": "Synthetic total?", "as_of_date": "2026-01-01"}
+                (split / "questions.jsonl").write_text(json.dumps(question) + "\n", encoding="utf-8")
+                (split / "rulebook.md").write_text("Synthetic policy", encoding="utf-8")
+
+                def solve(question, loaded, policy):
+                    if change == "rewrite":
+                        readme.write_text("Synthetic changed input", encoding="utf-8")
+                    else:
+                        (business / "added.csv").write_text("synthetic\n1\n", encoding="utf-8")
+                    return {"id": question["id"], "type": "number", "answer": 1}
+
+                output = root / "private-run"
+                with patch("nosleepclub_datamate.baseline_data.load_business", return_value=object()), \
+                     patch("nosleepclub_datamate.baseline_query.solve_question", new=solve), \
+                     redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "inputs changed"):
+                    run_baseline(split, output)
+                self.assertFalse((output / "submission.jsonl").exists())
+                self.assertFalse((output / "manifest.json").exists())
+
     def test_interleaved_businesses_release_memory_preserve_order_and_never_read_gold(self):
         class Business:
             pass

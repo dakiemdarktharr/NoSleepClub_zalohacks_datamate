@@ -109,6 +109,19 @@ class JsonlTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, "blank"):
                 read_jsonl(self.path)
 
+    def test_duplicate_json_members_cannot_silently_replace_ids_or_nested_answers(self):
+        for raw in (b'{"id":"first","id":"second"}',
+                    b'{"id":"a","answer":{"amount":1,"amount":2}}'):
+            self.path.write_bytes(raw)
+            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, "invalid JSON"):
+                read_jsonl(self.path)
+
+    def test_nonfinite_literals_and_overflow_are_rejected_at_any_depth(self):
+        for token in ("NaN", "Infinity", "-Infinity", "1e999"):
+            self.path.write_text('{"id":"a","answer":[' + token + ']}', encoding="utf-8")
+            with self.subTest(token=token), self.assertRaisesRegex(ValueError, "invalid JSON"):
+                read_jsonl(self.path)
+
 
 class ModelManifestTests(unittest.TestCase):
     def test_exact_aggregate_limit_is_allowed(self):

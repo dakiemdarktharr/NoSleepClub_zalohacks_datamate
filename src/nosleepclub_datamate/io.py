@@ -1,8 +1,29 @@
 """Small strict JSON helpers that never print source records in errors."""
 
 import json
+import math
 from pathlib import Path
 from typing import Any
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object member")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value: str) -> Any:
+    raise ValueError("nonfinite JSON constant")
+
+
+def _finite_float(value: str) -> float:
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("JSON number exceeds finite float range")
+    return result
 
 
 def identifier(value: Any, field: str) -> str:
@@ -39,8 +60,9 @@ def read_jsonl(path: Path) -> tuple[list[dict[str, Any]], bytes]:
         if not line.strip():
             raise ValueError(f"line {line_number}: blank JSONL record")
         try:
-            value = json.loads(line)
-        except json.JSONDecodeError as exc:
+            value = json.loads(line, object_pairs_hook=_unique_object,
+                               parse_constant=_reject_constant, parse_float=_finite_float)
+        except ValueError as exc:
             raise ValueError(f"line {line_number}: invalid JSON") from exc
         if not isinstance(value, dict):
             raise ValueError(f"line {line_number}: record must be an object")

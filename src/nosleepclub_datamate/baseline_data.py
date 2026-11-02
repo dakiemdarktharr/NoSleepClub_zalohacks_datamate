@@ -9,6 +9,7 @@ inventing business facts.
 
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import math
@@ -400,7 +401,10 @@ def _load_tables(root: Path, descriptions: dict, warnings: list[str]) -> list[Da
         if suffix == ".csv":
             raw = path.read_bytes()
             text = None
-            for encoding in ("utf-8-sig", "utf-16", "cp1258", "cp1252"):
+            # A BOM-less, even-length legacy file can decode as UTF-16 without
+            # raising, yielding unrelated characters and silently losing its schema.
+            encodings = ("utf-16",) if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)) else ("utf-8-sig", "cp1258", "cp1252")
+            for encoding in encodings:
                 try:
                     text = raw.decode(encoding)
                     break
@@ -516,10 +520,24 @@ def load_business(root: Path) -> BusinessData:
     descriptions = _readme_maps(readme)
     result.tables = _load_tables(root, descriptions, result.warnings)
     conversions: dict[tuple[str, str], tuple[float, str | None]] = {}
+    ambiguous_conversions: set[tuple[str, str]] = set()
+
+    def add_conversion(product: str, unit: str, factor: float, base: str | None) -> None:
+        key = (_entity_key(product), _entity_key(unit))
+        if key in ambiguous_conversions:
+            return
+        previous = conversions.get(key)
+        if previous and (previous[0] != factor or (previous[1] and base and _entity_key(previous[1]) != _entity_key(base))):
+            conversions.pop(key)
+            ambiguous_conversions.add(key)
+            result.warnings.append("ambiguous unit conversion; derived quantities remain unknown")
+        else:
+            conversions[key] = (factor, base or (previous[1] if previous else None))
+
     for name, unit, factor, base in re.findall(r"^\s*-\s+(.+?):\s*1\s+(.+?)\s*=\s*([\d.,]+)\s+(.+?)\s*$", readme, re.M):
         number = parse_number(factor)
         if number and number > 0:
-            conversions[(_entity_key(name), _entity_key(unit))] = (number, base.strip())
+            add_conversion(name, unit, number, base.strip())
     return_orders: set[str] = set()
     raw_sales: list[tuple[DataTable, dict[str, Any]]] = []
     for table in result.tables:
@@ -540,7 +558,7 @@ def load_business(root: Path) -> BusinessData:
                 unit = _text(row.get("large_unit")) or _text(row.get("unit"))
                 factor = parse_number(row.get("factor"))
                 if key and unit and factor and factor > 0:
-                    conversions[(_entity_key(key), _entity_key(unit))] = (factor, _text(row.get("base_unit")))
+                    add_conversion(key, unit, factor, _text(row.get("base_unit")))
             elif table.kind == "returns":
                 qty = parse_number(row.get("return_qty"))
                 if oid and ("return_qty" not in table.field_map or (qty is not None and qty > 0)):
@@ -601,8 +619,13 @@ def load_business(root: Path) -> BusinessData:
         base_qty = parse_number(row.get("base_qty"))
         unit = _text(row.get("unit"))
         base_unit = product.get("base_unit")
-        conversion = conversions.get((_entity_key(product_id), _entity_key(unit))) or conversions.get((_entity_key(name), _entity_key(unit)))
-        if conversion:
+        conversion_keys = ((_entity_key(product_id), _entity_key(unit)), (_entity_key(name), _entity_key(unit)))
+        conversion = conversions.get(conversion_keys[0]) or conversions.get(conversion_keys[1])
+        if any(key in ambiguous_conversions for key in conversion_keys):
+            # Preserve an explicitly supplied base quantity, but never replace a
+            # conflicting declaration with a guessed factor of one or the last row.
+            pass
+        elif conversion:
             factor, declared_base = conversion
             base_unit = declared_base or base_unit
             if base_qty is None and quantity is not None:

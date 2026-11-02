@@ -6,7 +6,7 @@
   "objective": {
     "metric": "penalty_accuracy",
     "target": 1,
-    "measured_official_score": null
+    "measured_official_score": 0.019
   },
   "constraints": {
     "parameter_cap": 15000000000,
@@ -42,5 +42,14 @@
     "learned_inference_parameters": 0,
     "external_inference_api_calls": 0,
     "full_agent_implemented": false
+  },
+  "official_evaluation": {
+    "entry_filename": "732b3761-a0b0-4183-b5be-207337b39e34.jsonl",
+    "public_score": 0.019,
+    "artifact_source_commit": "cff2357a9102000d7d97cc9c05a14954be130b1f",
+    "artifact_version": "0.2.0",
+    "artifact_sha256": "99a42e7f3fcca6974b9c3b0ebe79eea14916cd8b199155b4d65bfe259f8bb03b",
+    "split": "public_test",
+    "applies_to_audited_v0_2_1": false
   }
 }
