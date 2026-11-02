@@ -1,6 +1,6 @@
-"""Original, standard-library-only DataMate research utilities.
+"""Conservative deterministic DataMate baseline and research utilities.
 
-These tools do not implement the official evaluator or contest inference.
+The local matching proxy is not the organizer's official evaluator.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

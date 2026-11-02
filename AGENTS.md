@@ -2,7 +2,7 @@
 
 Read README.md, docs/CONSTRAINTS.md and docs/FEATURES.md before changing the system.
 
-- Current implementation is foundation utilities, not a DataMate solver. Distinguish implemented, tested, proposed and blocked work.
+- Current implementation includes foundation utilities and a conservative deterministic baseline, not the complete planned agent. Distinguish implemented, tested, proposed and blocked work.
 - Keep organizer data, labels, predictions, model weights, private traces and copied source dumps out of commits. Public fixtures must be wholly synthetic.
 - The supplied evaluator, rulebook/calendar, data partitions and budget are outside the automatic RSI editor's authority.
 - Public/private test data cannot guide training, synthetic curricula, identifier-keyed logic or prompt lessons.

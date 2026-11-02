@@ -13,9 +13,11 @@
 
 ## Data access và evaluator còn thiếu
 
-Data tab đã yêu cầu đăng nhập trong phiên nghiên cứu. Chưa có dataset/devkit/rulebook/calendar/evaluator/Docker guide ở repo; chưa xác minh business/question counts, sizes, actual split isolation, unanswerable ratio, special-type JSON sentinel, null/duplicate/rounding edge cases hoặc base image/log format.
+Ngày 02/11/2026 đã tải train và public test qua Data tab của phiên đăng nhập được chủ tài khoản cho phép. Train có 3.000 câu hỏi thuộc 30 business; public có 1.000 câu hỏi thuộc 14 business có câu hỏi. Gói gồm business files/README, questions, rulebook, calendar; chỉ train có answers. Dữ liệu và hash lưu private ngoài repo public. Không thấy chương trình evaluator BTC trong gói tải.
 
-Không thay phần thiếu bằng phỏng đoán. Business-grouped split và budgets trong repo là design choices, không phải mô tả phân phối chính thức. Không có điểm DataMate đã đo.
+Đã đối chiếu định dạng JSONL và đọc riêng rulebook của public: có bổ sung quy tắc so với train. Không giả định hai rulebook giống nhau. `abstain` và `unanswerable` có thể bỏ trường answer, reason nếu có phải là string; missing ID tính abstain. Việc so khớp local vẫn là proxy, chưa xác minh mọi edge case với chương trình chấm thật.
+
+Business-grouped split và budgets trong repo là design choices, không phải partitions chính thức. Không suy điểm hidden test từ train validation.
 
 ## Public repository
 

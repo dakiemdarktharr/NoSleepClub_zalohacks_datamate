@@ -2,7 +2,7 @@
 
 Nghiên cứu và nền phát triển data agent tiếng Việt cho **Zalo AI Challenge 2026 — DataMate**.
 
-**Mục tiêu:** tối đa hóa Penalty Accuracy, hướng tới PA = 1 bằng cơ chế có thể kiểm chứng. Chưa có kết quả DataMate chính thức; đây là repo khởi tạo gồm roadmap, kiến trúc và utilities cho harness, chưa phải solver thi hoàn chỉnh.
+**Mục tiêu:** tối đa hóa Penalty Accuracy, hướng tới PA = 1 bằng cơ chế có thể kiểm chứng. Repo có roadmap, utilities và một baseline tính toán trực tiếp cho nhóm câu hỏi hẹp. Chưa phải agent thi hoàn chỉnh; không có bảo đảm điểm tuyệt đối.
 
 ## Thiết kế đã chọn
 
@@ -26,10 +26,11 @@ Nghiên cứu và nền phát triển data agent tiếng Việt cho **Zalo AI Ch
 
 ## Chạy phần đã có
 
-Python 3.11+, runtime hiện không có dependency bên ngoài. Từ thư mục repo, PowerShell:
+Python 3.11+, dùng `openpyxl==3.1.5` để đọc XLSX. Từ thư mục repo, PowerShell:
 
 ~~~powershell
 $env:PYTHONPATH = "src"
+python -m pip install .
 python -m nosleepclub_datamate --help
 python -m unittest discover -s tests -v
 python -m nosleepclub_datamate summarize examples/verdicts.synthetic.jsonl --expected-total 5
@@ -50,15 +51,24 @@ python -m nosleepclub_datamate split PATH_TO_TRAIN_QUESTIONS.jsonl --source-spli
 
 Đường dẫn trên là đầu vào local của người chạy. Chỉ dùng training được phép; không dùng public/private test để sinh dữ liệu học, thu đáp án hoặc tối ưu prompt.
 
+Chạy baseline trên một split được cấp quyền, lưu kết quả ở thư mục private mới:
+
+~~~powershell
+python -m nosleepclub_datamate.baseline_run PATH_TO_SPLIT --output-dir PATH_TO_PRIVATE_RUN
+python -m nosleepclub_datamate.baseline_eval --train-dir PATH_TO_TRAIN --source-split train --output-dir PATH_TO_PRIVATE_EVAL
+~~~
+
+Baseline không có model suy luận hay API bên ngoài. Nó đọc schema/README và rulebook của split, chỉ xử lý một phần câu về doanh thu, số đơn và xếp hạng; câu chưa hỗ trợ trả `abstain`. Runner không mở `answers.jsonl`, kiểm tra đúng tập ID, ghi log và hash. Evaluator local là **proxy**, không thay thế cách chấm của BTC. Xem [phạm vi query](docs/BASELINE_QUERY_V1.md) và [cách chạy, giới hạn](docs/BASELINE_RUN.md).
+
 ## Trạng thái
 
 | Hạng mục | Hiện tại |
 | --- | --- |
 | Research, roadmap, architecture | Đã có tài liệu và nguồn đọc |
 | PA summary, model manifest validator, business-grouped split | Utilities nền, có kiểm thử synthetic |
-| Ingest CSV/XLSX/SQLite, agent, rule compiler, official scorer adapter | Chưa triển khai; xem backlog |
-| Official data/rulebook/calendar/devkit/evaluator | Chưa truy cập được qua phiên nghiên cứu; Data yêu cầu đăng nhập |
-| Điểm public/private, inference GPU, Docker thi | Chưa chạy, chưa có số đo |
+| CSV/XLSX/SQLite và deterministic baseline | Có bản giới hạn, kiểm thử synthetic và đo bằng nhãn train; chưa có agent/model |
+| Official data/rulebook/calendar | Đã truy cập bằng phiên đăng nhập, giữ private; không thấy evaluator BTC trong gói tải |
+| Official scorer adapter, inference GPU, Docker thi | Chưa triển khai hoặc đo |
 
 Theo [portal chính thức](https://challenge.zalo.ai/portal/datamate/), inference offline, tổng mọi model ≤15B, weights công khai trước 01/10/2026, toàn private ≤6 giờ. Freeze Docker **16/11/2026 23:59 GMT+7**. Xác minh lại cập nhật BTC khi triển khai.
 

@@ -13,7 +13,7 @@ from .splits import DEFAULT_RATIOS, split_training_questions
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
-        description="Offline research utilities. No official evaluator or inference implementation."
+        description="Offline research utilities. Separate baseline modules are available; no official evaluator."
     )
     commands = root.add_subparsers(dest="command", required=True)
     summarize = commands.add_parser(
