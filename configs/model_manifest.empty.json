@@ -1,0 +1,5 @@
+{
+  "status": "unselected",
+  "description": "No inference checkpoint selected or downloaded. Empty inventory is only the current utilities-only state, not a competition-ready solver.",
+  "models": []
+}

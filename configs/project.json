@@ -1,0 +1,39 @@
+{
+  "project": "NoSleepClub_zalohacks_datamate",
+  "status": "research_and_foundation",
+  "as_of": "2026-11-02",
+  "timezone": "Asia/Saigon",
+  "objective": {
+    "metric": "penalty_accuracy",
+    "target": 1,
+    "measured_official_score": null
+  },
+  "constraints": {
+    "parameter_cap": 15000000000,
+    "weights_public_before": "2026-10-01",
+    "offline_inference": true,
+    "wall_time_seconds": 21600,
+    "internal_wall_time_target_seconds": 17280,
+    "freeze_deadline": "2026-11-16T23:59:00+07:00"
+  },
+  "development": {
+    "rsi_enabled_at_inference": false,
+    "seed": "nosleepclub-v1",
+    "data_roles": [
+      "train",
+      "dev",
+      "calibration",
+      "lockbox"
+    ],
+    "official_artifacts_available": false
+  },
+  "backbone": {
+    "selected_checkpoint": null,
+    "candidates": [
+      "Qwen/Qwen3-8B",
+      "Qwen/Qwen3-14B",
+      "mit-oasys/rlm-qwen3-8b-v0.1"
+    ],
+    "policy": "Alternative experiments, not a combined inference ensemble. Verify checkpoint-level release/license/exact counts before selecting."
+  }
+}
